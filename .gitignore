@@ -1,0 +1,35 @@
+# vehicle assets & captures (large binaries, user data)
+data/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ML weights caches (if configured locally)
+weights/
+*.ckpt
+*.safetensors
+
+# upstream model repos cloned for local backends (SF3D, TRELLIS, ...) —
+# checked out by the Milestone A setup, not our source
+third_party/
+
+# secrets: HF tokens etc. never belong in the repo
+.env
+
+# editors / os
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
