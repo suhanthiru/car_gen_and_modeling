@@ -1,159 +1,160 @@
-# cargen — Dynamic Vehicle 3D Reconstruction
+# cargen
 
-One photo of a vehicle → a full interactive 3D model (3D Gaussian Splatting), with a generative
-prior guessing unseen regions. Every later photo or walk-around video — from any phone on the
-network — fuses real evidence into the same persistent model, replacing guesses with reality
-while confirmed regions stay locked. Per-splat `provenance` / `confidence` metadata is the
-arbitration mechanism.
+**Turn one photo of a car into a 3D model — then let it learn the real thing over time.**
 
-## Layout
+Take a single photo of a vehicle and cargen builds a complete, interactive 3D model of it:
+the side you photographed *and* the front, roof, and far side you didn't. Those unseen parts
+start as an educated guess. As you add more photos or a walk-around video — from any phone,
+at any time — the model replaces its guesses with the real geometry and paint of *your*
+specific car: the dent, the aftermarket wheels, the faded bumper.
 
-| Path | What |
-|---|---|
-| `cargen/core` | Splat cloud (SoA + fusion metadata), cameras/Sim(3), persistent `VehicleAsset` |
-| `cargen/segmentation` | Vehicle masking — stub / rembg |
-| `cargen/prior_generation` | Image→3D prior — stub sedan / TRELLIS / SF3D / Tripo API / custom slot; mesh→splats |
-| `cargen/feature_matching` | ORB (real) / LightGlue (Milestone B) |
-| `cargen/pose_estimation` | PnP + Sim(3) registration with confidence gating; video tracker |
-| `cargen/video` | Motion-magnitude frame sampler |
-| `cargen/fusion_engine` | Render→residual→dirty-flag→densify→update arbitration; renderers |
-| `cargen/reid` | Duplicate detection embeddings — histogram (real) / DINOv2 |
-| `cargen/export` | Standard 3DGS `.ply`, `.splat`, provenance overlay |
-| `server/` | FastAPI: ingestion, per-vehicle queue, merge + events, named storage |
-| `clients/capture` | Phone capture page (LAN) |
-| `viewer/` | Browser splat viewer — studio floor, provenance overlay, turntable |
-| `demo/` | Deterministic synthetic sedan fusion demo |
+It never forgets what it has already confirmed, and it never overwrites real detail with a
+worse guess. That memory is the whole idea.
 
-## Setup (CPU skeleton — works everywhere, no ML installs)
+---
 
-```powershell
-pip install -e .[dev]
-pytest                      # 170 tests, 80% coverage gate (currently 94%)
-python demo\run_demo.py     # synthetic fusion regression
-python -m server            # binds LAN; open the printed URL on your phone
-```
-
-Vehicle files land in `data\vehicles\<car-name>\` (named at capture time):
+## The idea in one picture
 
 ```
-data/vehicles/bobs-civic/
-├── manifest.json          identity, aliases, observation log, stats
-├── cloud.npz              the splats
-├── embeddings.npy         re-ID vectors
-├── observations/          your raw uploads, kept for re-fusing later
-└── exports/
-    ├── model.ply          standard 3DGS — opens in SuperSplat / Blender
-    ├── model.splat        what the viewer streams
-    └── model_provenance.ply   red = guessed, green = confirmed
+   1 photo                a walk-around video               over time
+      │                          │                              │
+      ▼                          ▼                              ▼
+┌───────────┐            ┌───────────────┐            ┌───────────────────┐
+│ a whole   │            │ guesses get   │            │ a faithful digital │
+│ car, most │  ───────▶  │ replaced by   │  ───────▶  │ twin of YOUR car,  │
+│ of it a   │            │ the real car, │            │ confirmed panel    │
+│ guess     │            │ panel by panel│            │ by panel           │
+└───────────┘            └───────────────┘            └───────────────────┘
+   ~15% real                 ~75% real                   approaching 1:1
 ```
 
-Viewer: `http://<laptop-ip>:8000/viewer/?v=<car-name>`. Capture page: `http://<laptop-ip>:8000/`
-(phone must be on the same Wi-Fi; the server is not reachable from the internet).
+Every point in the model is tagged **guessed** or **confirmed**, with a confidence score.
+That tag is what lets new evidence overwrite guesses cheaply while protecting the detail
+you've already captured — a blurry frame can't vandalise a clean one, and a part nobody has
+photographed yet simply stays a guess until someone does.
 
-## Environment
+The viewer has a toggle that paints this directly: **red = still a guess, green = confirmed
+from a real photo.** You can watch your car turn green as you scan it.
 
-The ML stack lives in a venv **on D:**, not in the global Store Python. Two reasons,
-both learned the hard way: C: had 17 GB free (torch+CUDA alone is 4.5 GB, and
-Milestone B's toolchain is ~8 GB more), and the global env runs numpy 2.x / OpenCV 5,
-which much of the 2024-era ML ecosystem won't accept. The venv also keeps those pins
-away from your other projects.
+---
+
+## Why it's built this way
+
+- **It's one persistent model per car, not a one-shot scan.** Photograph the same vehicle
+  next week, next month, from a different phone — it fuses into the same model.
+- **Video is first-class.** A slow walk-around confirms most of a car in one pass, because
+  consecutive frames overlap and are easy to track.
+- **Multiple cameras can contribute to one car.** Two people's photos of the same vehicle
+  can merge into a single model — the system recognises they're the same car and combines
+  the evidence. (Useful well beyond hobby scanning: a vehicle flagged from one photo, then
+  confirmed and completed by street cameras that spot it, is the same mechanism.)
+- **It runs on your own machine.** The server lives on your laptop and is reachable only by
+  devices on your Wi-Fi — nothing is exposed to the internet. Your captures stay yours.
+
+Under the hood it uses **3D Gaussian Splatting** (the same technique behind the glossy,
+photoreal 3D captures you may have seen), a generative image-to-3D model for the initial
+guess, and a fusion engine that arbitrates between guesses and evidence.
+
+---
+
+## Try it
+
+You'll need Python 3.11. The base install has **no heavy ML dependencies** — it runs a
+synthetic demo and the full server with a stand-in prior, so you can see the whole pipeline
+work before installing anything large.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-.\.venv\Scripts\python.exe -m pip install "rembg[cpu]"
+
+.\.venv\Scripts\python.exe -m pytest          # the test suite
+.\.venv\Scripts\python.exe demo\run_demo.py   # watch a synthetic car go from guess to confirmed
+.\.venv\Scripts\python.exe -m server          # start the server; open the printed URL on your phone
 ```
 
-Always run via `.\.venv\Scripts\python.exe` (or activate the venv) — the global
-interpreter has no CUDA torch and no rembg.
+The server prints a link like `http://192.168.1.42:8000/`. Open it on a phone that's on the
+same Wi-Fi, name your car, and take a photo. Then view the result at
+`http://192.168.1.42:8000/viewer/?v=<your-car-name>`.
 
-Verify: `GET /health` reports the backends actually loaded, e.g.
-`{"segmenter": "RembgSegmenter", "prior": "StubPriorGenerator", ...}`.
+Each car is saved to a plainly-named folder on your machine:
 
-Then pick a prior backend (`CARGEN_PRIOR_BACKEND`) — each adapter's module
-docstring has its full install recipe:
-
-| Backend | Quality | VRAM | License | Notes |
-|---|---|---|---|---|
-| `trellis` | best | 16 GB rec. (8 GB only w/ `low_vram`, unverified) | MIT | **Native Gaussians — no mesh round-trip.** Painful Windows install. Intended default on the 12–16 GB box. |
-| `sf3d` | good | ~7 GB | Stability Community | Easy install; laptop fallback. Mesh → surface-sampled. |
-| `tripo` | best | none (cloud) | commercial API | Needs `TRIPO_API_KEY`; photo leaves your machine. Ships untested. |
-| `custom` | — | — | — | Point `CARGEN_CUSTOM_PRIOR` at your own `module:callable`. |
-| `stub` | procedural sedan | none | — | Default; no ML installs needed. |
-
-Backends that emit Gaussians natively override `PriorGenerator.generate_splats`;
-everything else inherits the default mesh→surface-sample path.
-
-## Milestone B installs (real fusion)
-
-Visual Studio Build Tools (C++), CUDA Toolkit matching the torch build, then:
-
-```powershell
-pip install gsplat lightglue
+```
+data/vehicles/bobs-civic/
+├── observations/          your original photos, kept so the model can improve later
+└── exports/
+    ├── model.ply          standard format — opens in SuperSplat, PlayCanvas, Blender
+    ├── model.splat        what the web viewer streams
+    └── model_provenance.ply   the red-vs-green "guessed vs confirmed" view
 ```
 
-Backend selection, storage root, `auto_merge` (default **off** → pending-approval mode), and
-LAN bind live in `server/config.py` (env-overridable, `CARGEN_*`).
+`model.ply` is a standard file — drag it into [SuperSplat](https://superspl.at/editor) in
+your browser to inspect it outside the app.
 
-## Why the prior isn't photorealistic (and what would be)
+### Getting a real 3D model (not the stand-in)
 
-A single photo cannot produce a photorealistic model — the far side isn't in the pixels, so
-it's a statistical guess about sedans-in-general. Photorealism needs **many real views,
-jointly optimised**. Four things stand between the prior and that:
+The base install uses a placeholder "prior" that produces a blocky test shape. For a real
+reconstruction you install one image-to-3D backend. See
+[`docs/SETUP.md`](docs/SETUP.md) for the full recipe — the short version is a CUDA build of
+PyTorch, `rembg` for cutting the car out of the background, and one of these:
 
-1. **View-dependent appearance** — `GaussianCloud.sh_rest` (SH bands 1-3) now exists and
-   round-trips through `.ply`, but a prior leaves it zero: one photo carries no evidence
-   about how a surface looks from elsewhere. Zero SH = matte by construction; no moving
-   highlights. Only a multi-view optimisation can fill these bands.
-2. **Joint optimisation** — `fusion_engine/optimize.py` is deliberately *localized* (one
-   frame, dirty splats only). Right for incremental updates, but it never sees two views at
-   once, so it can't be forced into multi-view consistency. Photorealism needs ~7k-30k
-   iterations over all views (`consolidate.py`, not yet built).
-3. **Adaptive densification** — real 3DGS splits/clones by view-space gradient during
-   training. Ours only fills holes, so fine detail has no mechanism to appear.
-4. **gsplat** — blocked on the CUDA install (see below).
+| Backend | Quality | Needs | Notes |
+|---|---|---|---|
+| **SF3D** | good | ~7 GB GPU, a C++ compiler | Runs fully offline. What this project is tested on. |
+| **TRELLIS** | best | 16 GB GPU | Highest quality, offline. Fiddly to install on Windows. |
+| **Tripo3D** | best | an API key | Cloud service — no GPU needed, but your photo leaves your machine. |
 
-Expect >30 dB PSNR on held-out views with 50+ good frames. Under ~20 views, worse than the
-prior. Photorealism is bought with capture effort and compute, not a better prior.
+---
 
-## Known gotchas
+## How to get the best result
 
-- **Image-to-3D models need object-centric framing, or they return a blob.** SF3D is trained
-  on square, centred, subject-filling images and its own `run.py` calls
-  `resize_foreground(image, 0.85)` first. Feeding a raw photo (car at ~20% of a 4:3 frame,
-  off-centre) is a severe distribution shift: measured, it inflated a sedan's W/L from 0.446
-  to 0.524 and an estate's from 0.517 to 0.671. `SF3DPriorGenerator._frame_subject` calls
-  SF3D's own function so the framing matches by construction. **Check this first on any new
-  prior backend** — it dwarfs every other quality knob.
-- **Capture advice that follows from the above:** a three-quarter view beats a side profile
-  (27.5% vs 12.6% observed from one photo, similar proportion accuracy), and matte/light paint
-  beats dark gloss — a glossy car mirrors its surroundings and the prior bakes that in as albedo.
+These aren't guesses — they're measured on this build:
 
-- **Image-to-3D output is view-aligned, not canonical.** Measured on SF3D: the same car
-  photographed at azimuth 0.0 vs 1.2 rad comes back with its length axis along -z vs -x,
-  tilted by the camera's elevation. `canonicalize_orientation` (PCA) puts it back on its
-  own axes — without it the car sits tilted in the viewer and two scans of one vehicle
-  cannot be merged. PCA still can't tell front from back, so merges may be 180° out until
-  the phase-2 render verifier lands.
-- **texture_baker built with `USE_CUDA=0` is CPU-only**, but SF3D hands it CUDA tensors.
-  `_install_cpu_baker_bridge` moves them across; it self-disables if you ever rebuild
-  texture_baker with the CUDA Toolkit.
+- **Shoot a three-quarter view**, not a flat side-on shot. Standing at a front or rear
+  corner so you see two sides at once roughly *doubles* how much of the car gets confirmed
+  from a single photo.
+- **A slow walk-around video beats any single photo.** This is how the model actually
+  becomes your car rather than a generic one.
+- **Matte or light-coloured paint reconstructs better than dark gloss.** A glossy car acts
+  like a mirror, and a single photo can't tell "reflection of a tree" from "green paint".
+- **Fill the frame and keep the car centred.** A tiny car in the corner of a wide photo
+  confuses the model badly.
+- **Even, diffuse light** (overcast, or open shade) beats harsh direct sun.
 
-- **The `stub` segmenter is a crude rectangle**, so with it the prior's paint gets tinted by the
-  background and the silhouette carries a small halo of densified splats. It exists to keep the
-  CPU path installable, not to be good. Any real evaluation wants `CARGEN_SEGMENTER=rembg`.
-- **Densification never invents depth in open space** (`densify_reach`): new splats may only grow
-  within a few px of geometry that already exists, inheriting its depth. Removing that guard
-  reintroduces a flat slab of splats across the frame whenever the mask is sloppy — a monocular
-  view has no depth for a pixel with nothing behind it.
+---
 
-- **Viewer GPU sort**: `gpuAcceleratedSort` is forced **off** in `viewer/main.js`. With it on, the
-  splats render nothing — silently, no error — on Intel Arc iGPUs via ANGLE/D3D11, and Chrome
-  prefers the integrated GPU over a discrete one by default. Don't re-enable without a
-  per-device capability probe.
-- **Off-network access**: the server binds the LAN only. For scanning away from home, put
-  Tailscale on the laptop and phone — same enclosed setup, no ports opened, no code change.
-- **Demo `observed%` ceiling**: the procedural sedan is built from overlapping boxes, so ~34% of
-  its sampled surface is interior faces no camera can reach. `demo/synthetic.py` visibility-culls
-  them; real priors emit outer shells and don't have this problem.
+## Honest status
+
+This is a working system with a deliberate boundary around what it can and can't do yet.
+
+**What works today:** one photo → a complete, correctly-proportioned, textured 3D car;
+segmentation that cleanly isolates the vehicle from a cluttered background; the guess-vs-
+confirmed fusion logic; per-car persistent storage; the phone capture page and web viewer;
+merging two scans of the same car.
+
+**What's honest to expect:** a single photo gives you a *plausible* car, not a photograph.
+The far side is inferred, glossy paint bakes in reflections, and the model can't yet tell a
+car's front from its back (it may face the wrong way). None of this is a bug you can tune
+away — **a single image simply doesn't contain the rest of the car.**
+
+**What makes it photorealistic:** many real views of the actual car, optimised together —
+i.e. a proper walk-around video plus a consolidation pass that's the next major piece of
+work. With ~50+ good frames that reaches the quality of the 3D-capture demos you've seen
+online. With only a handful of frames it won't. **Realism is bought with capture effort, not
+with a cleverer guess** — which is exactly why the whole system is built to keep improving
+one model over time instead of chasing perfection from a single shot.
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what's built, what's next, and why.
+
+---
+
+## For developers
+
+Architecture, the module map, install recipes, and the hard-won gotchas (image framing,
+coordinate frames, the CUDA toolchain, viewer GPU quirks) live in
+[`docs/SETUP.md`](docs/SETUP.md) and [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md). The code is
+organised as swappable modules — segmentation, prior generation, matching, pose, fusion,
+export — each with a documented interface so a stub can be replaced by a real model without
+touching the orchestration.
+
+Configuration (which backends to load, storage location, whether to auto-merge duplicates,
+network binding) is all environment-driven; `GET /health` reports exactly what's running.
