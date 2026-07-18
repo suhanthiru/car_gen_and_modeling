@@ -13,6 +13,7 @@ Run: python scripts/verify_gsplat.py
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,19 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# Windows + Python 3.8+ resolves a .pyd's dependent DLLs via the default search
+# order (which does NOT include PATH), so gsplat_cuda.pyd can't find the CUDA
+# runtime unless we register its directory explicitly. CUDA 13.x moved the
+# runtime DLLs from bin/ to bin/x64/, so register both.
+if os.name == "nt":
+    for _var in ("CUDA_PATH", "CUDA_HOME"):
+        _root = os.environ.get(_var)
+        if _root:
+            for _sub in ("bin", os.path.join("bin", "x64")):
+                _dll_dir = os.path.join(_root, _sub)
+                if os.path.isdir(_dll_dir):
+                    os.add_dll_directory(_dll_dir)
 
 # Windows consoles default to cp1252, which cannot encode the bar/rule glyphs.
 if hasattr(sys.stdout, "reconfigure"):

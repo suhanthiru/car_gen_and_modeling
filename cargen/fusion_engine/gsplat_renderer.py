@@ -113,12 +113,21 @@ class GsplatRenderer(SplatRenderer):
                 # a 3D colours tensor means SH; gsplat needs the band count told
                 # to it, and evaluates per view direction from there
                 sh_degree=3 if colors.ndim == 3 else None,
-                backgrounds=t.full((1, 3), self._background, device=self._device),
+                # No gsplat-side background: with a single camera gsplat squeezes
+                # the camera dim (image_dims == ()), and its RGB+ED path also
+                # appends a depth-background channel — the two together make the
+                # explicit-background shape contract unsatisfiable. Instead we
+                # render over black and composite self._background in ourselves
+                # below (matching PointRenderer, whose default background the
+                # fusion engine's residuals are calibrated against).
+                backgrounds=None,
             )
 
         image = rendered[0, ..., :3].cpu().numpy().astype(np.float32)
         depth = rendered[0, ..., 3].cpu().numpy().astype(np.float32)
         alpha_np = alpha[0, ..., 0].cpu().numpy().astype(np.float32)
+        # composite the splat render over a flat self._background
+        image = image + (1.0 - alpha_np[..., None]) * self._background
         depth[alpha_np <= 0.01] = np.inf
 
         index = self._splat_index(cloud, pose, intrinsics, alpha_np)

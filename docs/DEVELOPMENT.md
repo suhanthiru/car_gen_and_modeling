@@ -89,6 +89,33 @@ shell (the cached installer path is from winget):
 Version must match the PyTorch build (cu121 → 12.1); PyTorch rejects a CUDA *major* mismatch
 when building extensions.
 
+### Building gsplat on Windows (the verified stack: CUDA 12.8 + torch cu128)
+
+The reference machine builds gsplat 1.5.3 against **CUDA Toolkit 12.8** + **torch 2.11 cu128** +
+**MSVC 19.44 (VS 2022)**. This combination works; **CUDA 13.x does not** — its thrust/cub (CCCL)
+headers force `nvcc` onto MSVC's conforming preprocessor (`/Zc:preprocessor`), which then makes
+MSVC emit *divergent name-mangling* for gsplat's 29-parameter `launch_*_kernel<CDIM>` templates
+(explicit instantiation vs. call site), producing unfixable `LNK2019` link errors. Stay on 12.8.
+
+Three fixes are needed, and **two of them patch files inside `.venv/`, which is gitignored — so
+they must be reapplied after any `pip install --force-reinstall torch` / `pip install gsplat` or a
+fresh venv**, or gsplat silently reverts to the CPU path:
+
+1. **torch header (`c10/cuda/CUDACachingAllocator.h`, ~line 105).** torch 2.11 names a parameter
+   `bool small`; the Windows `<rpcndr.h>` macro `#define small char` rewrites it to `bool char`,
+   a syntax error under `nvcc`. Rename the parameter (e.g. `small` → `is_small_pool_`). This is a
+   torch-2.11-on-Windows bug independent of CUDA version.
+2. **gsplat host flags (`gsplat/cuda/_backend.py`, the `extra_cflags` line).** Stock gsplat passes
+   GCC flags (`-O3 -Wno-attributes`) to MSVC's `cl.exe`, which rejects them (`D8021`). On Windows
+   use MSVC equivalents (`/O2 /wd4068`).
+3. **CUDA 12.x runtime DLL directory.** nothing to patch, but the build/verify shell must have
+   `%CUDA_HOME%\bin` on `PATH`, and Python 3.8+ needs `os.add_dll_directory` for the CUDA runtime
+   at import (see the guard at the top of `scripts/verify_gsplat.py`). (CUDA 13.x moved these to
+   `bin/x64/`; 12.8 keeps them in `bin/`.)
+
+`scripts/_run_verify_gsplat.bat` bundles the correct env (vcvars64, `CUDA_HOME` → v12.8,
+`DISTUTILS_USE_SDK=1`, PATH) and runs the verification below.
+
 ### Verifying gsplat is really working
 `import gsplat` JIT-compiles CUDA kernels on first use, and a stale or mismatched build can
 "succeed" at both importing and rendering while quietly never moving the optimizer — a no-op

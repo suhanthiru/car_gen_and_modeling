@@ -147,7 +147,9 @@ class LocalizedOptimizer:
             rendered, _, _ = rasterization(
                 means=means, quats=quats, scales=scales, opacities=opacities,
                 colors=colors, viewmats=viewmat[None], Ks=K, width=w, height=h,
-                sh_degree=3, backgrounds=t.full((1, 3), 1.0, device=dev),
+                # single camera -> gsplat squeezes the camera dim, so a plain-RGB
+                # render expects a 1-D (channels,) background, not (1, channels).
+                sh_degree=3, backgrounds=t.full((3,), 1.0, device=dev),
             )
             loss = _weighted_l1_dssim(
                 rendered[..., :3], target[None], weight, cfg.ssim_lambda
