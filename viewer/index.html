@@ -13,11 +13,22 @@
     color: #1b1f24;
   }
   #hud {
-    position: fixed; top: 16px; left: 16px; z-index: 10;
-    background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(8px);
-    border: 1px solid #e1e4e8; border-radius: 12px; padding: 14px 16px;
-    min-width: 210px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    background: rgba(255, 255, 255, 0.82); backdrop-filter: blur(8px);
+    border: 1px solid #e1e4e8; border-radius: 12px; padding: 10px 12px;
+    min-width: 168px; max-width: min(72vw, 230px);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
   }
+  .hud-head { display: flex; align-items: center; gap: 8px; }
+  .hud-head h1 { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #hudToggle {
+    flex: none; width: 24px; height: 24px; border-radius: 7px; border: 1px solid #e1e4e8;
+    background: #f6f8fa; color: #57606a; font-size: 13px; line-height: 1;
+    cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center;
+  }
+  #hud.min .hud-body { display: none; }
+  #hud.min { min-width: 0; }
+  #hud.min .hud-head h1 { margin-bottom: 0; }
   h1 { font-size: 15px; margin: 0 0 2px; }
   .sub { font-size: 12px; color: #6a737d; margin-bottom: 12px; }
   .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
@@ -67,11 +78,16 @@
 <div id="msg">Loading…</div>
 
 <div id="hud" hidden>
-  <h1 id="vname">—</h1>
+  <div class="hud-head">
+    <h1 id="vname">—</h1>
+    <button id="hudToggle" type="button" aria-label="Show or hide details" title="Details">i</button>
+  </div>
+  <div class="hud-body">
   <div class="sub" id="vsub">—</div>
   <div class="stat"><span>Splats</span><b id="sSplats">—</b></div>
   <div class="stat"><span>Observed</span><b id="sObs">—</b></div>
   <div class="stat"><span>Confidence</span><b id="sConf">—</b></div>
+  <div class="stat"><span>Frames</span><b id="sFrames">—</b></div>
   <div class="controls">
     <div id="consolidate" class="seg" hidden>
       <div class="seg-row">
@@ -92,6 +108,7 @@
     <label class="ctl">
       <input type="checkbox" id="cSpin" checked> Auto-rotate
     </label>
+  </div>
   </div>
 </div>
 

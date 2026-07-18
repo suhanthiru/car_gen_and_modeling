@@ -49,13 +49,16 @@ def canonicalize_orientation(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarr
         rotation[2] *= -1  # keep it a rotation, not a reflection
     out = centred @ rotation.T
 
-    # Disambiguate up: compare horizontal spread of the top vs bottom decile.
-    # A car's chassis/wheels footprint is wider than its roof.
+    # Disambiguate up: a car narrows in WIDTH toward the roof — the beltline and
+    # fenders are wider than the greenhouse. Compare width (y) spread of the top
+    # vs bottom decile, NOT length+width: a fastback/SUV roofline can be as long
+    # as the base, so including the length axis lets it swamp the real signal and
+    # flip the car upside down (measured on a crossover).
     z = out[:, 2]
     low, high = np.percentile(z, 10), np.percentile(z, 90)
-    spread_low = np.ptp(out[z <= low, :2], axis=0).sum() if (z <= low).any() else 0.0
-    spread_high = np.ptp(out[z >= high, :2], axis=0).sum() if (z >= high).any() else 0.0
-    if spread_high > spread_low:  # wide end is on top → we're upside down
+    width_low = np.ptp(out[z <= low, 1]) if (z <= low).any() else 0.0
+    width_high = np.ptp(out[z >= high, 1]) if (z >= high).any() else 0.0
+    if width_high > width_low:  # roof wider than base → we're upside down
         rotation[1:] *= -1  # flip y and z together to stay right-handed
         out = centred @ rotation.T
 

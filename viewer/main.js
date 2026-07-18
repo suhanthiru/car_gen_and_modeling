@@ -86,6 +86,7 @@ async function start(name) {
   hud.hidden = false;
   fillHud(info);
   wireControls(viewer, controls, name);
+  setupHudCollapse();
   updateConsolidationUI(info.consolidation);
   prevConsolidation = info.consolidation;
   // live-update: when the background photoreal pass lands, refresh in place
@@ -185,6 +186,14 @@ function fillHud(info) {
   document.getElementById("sObs").textContent =
     (info.observed_fraction * 100).toFixed(1) + "%";
   document.getElementById("sConf").textContent = info.mean_confidence.toFixed(2);
+  // frames toward the automatic photoreal pass. consolidated_frames > 0 means
+  // it already ran; otherwise show progress to the min needed to trigger it.
+  const need = info.consolidate_min_frames || 24;
+  const have = info.frames || 0;
+  document.getElementById("sFrames").textContent =
+    info.consolidated_frames > 0 && have <= info.consolidated_frames
+      ? `${have} · photoreal done`
+      : `${have} / ${need} for photoreal`;
 }
 
 // Which export is on screen, and whether the user is viewing the pre- or
@@ -238,6 +247,16 @@ function wireControls(viewer, controls, name) {
 
   spin.onchange = () => (controls.autoRotate = spin.checked);
   controls.addEventListener("start", () => (spin.checked = false));
+}
+
+function setupHudCollapse() {
+  const toggle = document.getElementById("hudToggle");
+  // A small embedded viewport (the phone capture page's iframe) can't spare the
+  // room for the full panel — start minimized there so the car is visible, and
+  // let a tap expand it. On a full-size window, start expanded.
+  const small = (innerHeight > 0 && innerHeight < 560) || (innerWidth > 0 && innerWidth < 480);
+  if (small) hud.classList.add("min");
+  toggle.onclick = () => hud.classList.toggle("min");
 }
 
 function updateConsolidationUI(stateStr) {

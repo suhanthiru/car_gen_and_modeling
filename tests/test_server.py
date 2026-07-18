@@ -197,6 +197,7 @@ class TestReads:
             v = data["vehicles"][0] if endpoint == "/vehicles" else data
             assert v["consolidation"] == "none"  # nothing consolidated yet
             assert v["frames"] >= 0 and v["consolidated_frames"] == 0
+            assert v["consolidate_min_frames"] >= 1  # threshold surfaced for the HUD
 
     def test_before_snapshot_is_404_until_consolidation_runs(self, client, jpeg):
         post(client, jpeg(0.0), "civic")

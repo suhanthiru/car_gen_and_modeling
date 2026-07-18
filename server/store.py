@@ -125,4 +125,5 @@ class VehicleStore:
             "mean_confidence": stats.get("mean_confidence", 0.0),
             "frames": manifest.get("frames", 0),
             "consolidated_frames": manifest.get("consolidated_frames", 0),
+            "consolidate_min_frames": self.config.consolidate_min_frames,
         }
