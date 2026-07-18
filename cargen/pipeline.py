@@ -11,6 +11,7 @@ Two entry points, both operating on a persistent asset:
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -88,14 +89,21 @@ class Pipeline:
         self.matcher = matcher or backends.build_matcher()
         self.renderer = renderer or backends.build_renderer()
         self.embedder = embedder or backends.build_embedder()
-        # PnP first (cheap, precise when there's keypoint overlap); render-based
-        # re-ID as fallback for photos too far from anything confirmed for
-        # sparse matching to bridge, but with SOME confirmed overlap to render
-        # against (see cargen/reid/verify.py for what this can't fix).
-        self.registrar = registrar or FallbackRegistrar([
-            PnPRegistrar(self.matcher),
-            RenderReidRegistrar(RenderVerifier(self.renderer, self.embedder)),
-        ])
+        # PnP is the default: cheap, precise when there's keypoint overlap, and
+        # it never blocks. The render-based re-ID fallback (render_reid.py) is
+        # opt-in via CARGEN_RENDER_REID=1 because a candidate-pose sweep on the
+        # *CPU* PointRenderer is minutes per photo on a real (120k-splat) cloud
+        # — it only makes sense against a GPU renderer. When enabled it slots in
+        # behind PnP so it only fires when PnP can't register the frame.
+        if registrar is not None:
+            self.registrar = registrar
+        elif os.environ.get("CARGEN_RENDER_REID", "0") == "1":
+            self.registrar = FallbackRegistrar([
+                PnPRegistrar(self.matcher),
+                RenderReidRegistrar(RenderVerifier(self.renderer, self.embedder)),
+            ])
+        else:
+            self.registrar = PnPRegistrar(self.matcher)
         # A differentiable renderer earns the real refinement loop; the CPU
         # stand-in only repaints splats. Driven off the renderer's own
         # declaration so the capability is explicit, not probed.

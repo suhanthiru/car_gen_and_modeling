@@ -116,10 +116,17 @@ class RenderVerifier:
         embedder: Embedder,
         n_azimuth: int = 24,
         n_elevation: int = 3,
-        min_observed_px: int = 400,
+        min_observed_px: int = 60,
         ambiguity_angle_deg: float = 60.0,
         ambiguity_margin: float = 0.05,
         refine_steps: int = 7,
+        # The pose search compares normalized appearance embeddings, which don't
+        # need full detail — so render candidates tiny and against a subsampled
+        # cloud. Without this a 120k-splat cloud at phone resolution is ~4s PER
+        # render on the CPU renderer, and ~79 renders (0.5+ hour... no, ~5 min)
+        # freezes the whole server. These knobs cut that to well under a second.
+        search_width: int = 96,
+        search_max_splats: int = 15_000,
     ):
         self._renderer = renderer
         self._embedder = embedder
@@ -129,6 +136,31 @@ class RenderVerifier:
         self._ambiguity_angle_deg = ambiguity_angle_deg
         self._ambiguity_margin = ambiguity_margin
         self._refine_steps = refine_steps
+        self._search_width = search_width
+        self._search_max_splats = search_max_splats
+
+    def _search_inputs(
+        self, cloud: GaussianCloud, intrinsics: Intrinsics
+    ) -> tuple[GaussianCloud, Intrinsics]:
+        """A cheap-to-render (cloud, intrinsics) pair for the coarse pose sweep."""
+        intr = intrinsics
+        if intrinsics.width > self._search_width:
+            intr = intrinsics.scaled(self._search_width / intrinsics.width)
+        if cloud.n > self._search_max_splats:
+            # keep every OBSERVED splat (they're what we score against) and
+            # subsample the rest — the prior fills silhouette, observed carries
+            # the appearance signal
+            obs = cloud.provenance == Provenance.OBSERVED
+            keep = obs.copy()
+            rest = np.where(~obs)[0]
+            budget = self._search_max_splats - int(obs.sum())
+            if budget > 0 and rest.size > budget:
+                rng = np.random.default_rng(0)
+                keep[rng.choice(rest, size=budget, replace=False)] = True
+            elif budget > 0:
+                keep[rest] = True
+            cloud = cloud.select(keep)
+        return cloud, intr
 
     def verify(
         self,
@@ -141,6 +173,7 @@ class RenderVerifier:
             return VerifyResult(None, 0.0, False, 0)  # nothing confirmed to match yet
 
         query = self._embedder.embed(image_rgb, mask)
+        cloud, intrinsics = self._search_inputs(cloud, intrinsics)
         center, radius, _ = _cloud_bounds(cloud)
 
         coarse = self._score(cloud, candidate_poses(cloud, self._n_azimuth, self._n_elevation),
