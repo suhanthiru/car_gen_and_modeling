@@ -13,7 +13,8 @@ from cargen.pose_estimation.stub import StubRegistrar
 from cargen.prior_generation.interface import PriorGenerator
 from cargen.reid.histogram import HistogramEmbedder
 from demo.synthetic import BackgroundSegmenter, orbit_pose, render_photo
-from server.app import create_app, decode_image
+from cargen.core.camera import CameraPose, Intrinsics
+from server.app import create_app, decode_image, should_autoconsolidate
 from server.config import Config, sanitize_name
 from server.events import Event, EventLog
 from server.merge import merge_assets, merge_clouds, pick_primary
@@ -189,8 +190,27 @@ class TestReads:
         post(client, jpeg(0.0), "civic")
         assert client.get("/vehicles/civic/model", params={"fmt": "obj"}).status_code == 422
 
+    def test_consolidation_state_reported_and_defaults_to_none(self, client, jpeg):
+        post(client, jpeg(0.0), "civic")
+        for endpoint in ("/vehicles", "/vehicles/civic"):
+            data = client.get(endpoint).json()
+            v = data["vehicles"][0] if endpoint == "/vehicles" else data
+            assert v["consolidation"] == "none"  # nothing consolidated yet
+            assert v["frames"] >= 0 and v["consolidated_frames"] == 0
+
+    def test_before_snapshot_is_404_until_consolidation_runs(self, client, jpeg):
+        post(client, jpeg(0.0), "civic")
+        assert client.get("/vehicles/civic/model", params={"fmt": "before"}).status_code == 404
+
     def test_missing_vehicle_404s(self, client):
         assert client.get("/vehicles/ghost").status_code == 404
+
+    def test_root_redirects_to_capture_mount(self, client):
+        # the capture page loads app.js by relative URL, which only resolves
+        # under /capture/ — so "/" must redirect there, not serve bare HTML
+        r = client.get("/", follow_redirects=False)
+        assert r.status_code in (307, 308)
+        assert r.headers["location"] == "/capture/"
         assert client.get("/vehicles/ghost/model").status_code == 404
 
     def test_health(self, client):
@@ -446,3 +466,49 @@ class TestDecodeImage:
 
         with pytest.raises(HTTPException):
             decode_image(b"garbage", max_width=1280)
+
+
+class TestAutoConsolidateGate:
+    """The pure decision that gates the background photorealism pass. The pass
+    itself is CUDA-only (see scripts/consolidate_vehicle.py); only the gating is
+    tested here, so it runs on any machine."""
+
+    def _asset_with_frames(self, n_frames: int, consolidated: int = 0):
+        asset = VehicleAsset(name="car")
+        asset.consolidated_frames = consolidated
+        image = np.zeros((4, 6, 3), np.uint8)
+        pose, intr = CameraPose.identity(), Intrinsics.simple(6, 4)
+        for _ in range(n_frames):
+            asset.add_frame(image, None, pose, intr)
+        return asset
+
+    def test_fires_once_enough_new_frames_and_gpu_present(self):
+        cfg = Config(auto_consolidate=True, consolidate_min_frames=24)
+        asset = self._asset_with_frames(24)
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=True) is True
+
+    def test_skipped_without_gsplat(self):
+        cfg = Config(auto_consolidate=True, consolidate_min_frames=24)
+        asset = self._asset_with_frames(50)
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=False) is False
+
+    def test_skipped_when_disabled(self):
+        cfg = Config(auto_consolidate=False, consolidate_min_frames=24)
+        asset = self._asset_with_frames(50)
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=True) is False
+
+    def test_skipped_below_frame_threshold(self):
+        cfg = Config(auto_consolidate=True, consolidate_min_frames=24)
+        asset = self._asset_with_frames(23)
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=True) is False
+
+    def test_skipped_when_no_new_frames_since_last_pass(self):
+        cfg = Config(auto_consolidate=True, consolidate_min_frames=24)
+        # already consolidated at 30 frames, still 30 -> nothing new to do
+        asset = self._asset_with_frames(30, consolidated=30)
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=True) is False
+
+    def test_fires_again_after_more_frames_arrive(self):
+        cfg = Config(auto_consolidate=True, consolidate_min_frames=24)
+        asset = self._asset_with_frames(40, consolidated=30)  # 10 new since last
+        assert should_autoconsolidate(asset, cfg, gsplat_ok=True) is True

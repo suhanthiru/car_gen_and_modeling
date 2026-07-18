@@ -19,9 +19,12 @@ import numpy as np
 from cargen.core.asset import VehicleAsset
 from cargen.core.camera import CameraPose, Intrinsics
 from cargen.fusion_engine.engine import FusionConfig, FusionEngine, FusionReport
+from cargen.pose_estimation.fallback import FallbackRegistrar
 from cargen.pose_estimation.interface import Registration, Registrar
 from cargen.pose_estimation.registration import LandmarkStore, PnPRegistrar
+from cargen.pose_estimation.render_reid import RenderReidRegistrar
 from cargen.pose_estimation.video_tracker import VideoTracker
+from cargen.reid.verify import RenderVerifier
 from cargen.video.frame_sampler import FrameSampler
 
 # How authoritative each device tier's imagery is (see FusionEngine.fuse_frame).
@@ -85,7 +88,14 @@ class Pipeline:
         self.matcher = matcher or backends.build_matcher()
         self.renderer = renderer or backends.build_renderer()
         self.embedder = embedder or backends.build_embedder()
-        self.registrar = registrar or PnPRegistrar(self.matcher)
+        # PnP first (cheap, precise when there's keypoint overlap); render-based
+        # re-ID as fallback for photos too far from anything confirmed for
+        # sparse matching to bridge, but with SOME confirmed overlap to render
+        # against (see cargen/reid/verify.py for what this can't fix).
+        self.registrar = registrar or FallbackRegistrar([
+            PnPRegistrar(self.matcher),
+            RenderReidRegistrar(RenderVerifier(self.renderer, self.embedder)),
+        ])
         # A differentiable renderer earns the real refinement loop; the CPU
         # stand-in only repaints splats. Driven off the renderer's own
         # declaration so the capability is explicit, not probed.
@@ -383,3 +393,35 @@ class Pipeline:
             embedding,
         )
         return result
+
+    # -- consolidation ---------------------------------------------------
+
+    def consolidate(self, asset: VehicleAsset, config=None):
+        """Joint multi-view refinement over every persisted frame — Milestone B.
+
+        Unlike `ingest_photo`/`ingest_video`'s per-frame `fuse_frame` loop, this
+        runs one optimizer over ALL of `asset.load_frames()` at once (~7k-30k
+        iterations), which is what actually forces multi-view-consistent,
+        photoreal geometry. Requires a real GPU + gsplat (see
+        `scripts/verify_gsplat.py`); there is no CPU fallback, since a
+        Python-loop CPU version of this would take hours.
+
+        Mutates `asset.cloud` in place and returns the `ConsolidationReport`.
+        Caller is responsible for `asset.save(...)` afterward.
+        """
+        from cargen.fusion_engine.consolidate import Consolidator, FrameObservation
+
+        frames = [
+            FrameObservation(
+                image_rgb=f.image_rgb,
+                mask=f.mask,
+                pose=f.pose,
+                intrinsics=f.intrinsics,
+                evidence_weight=f.evidence_weight,
+            )
+            for f in asset.load_frames()
+        ]
+        consolidator = Consolidator(config=config, device="cuda")
+        refined_cloud, report = consolidator.consolidate(asset.cloud, frames)
+        asset.cloud = refined_cloud
+        return report

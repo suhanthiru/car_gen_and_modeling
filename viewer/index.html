@@ -30,6 +30,25 @@
   .ctl input { accent-color: #3b82f6; width: 15px; height: 15px; }
   .legend { display: none; margin-top: 8px; font-size: 11px; color: #6a737d; }
   .legend.on { display: block; }
+  .seg { margin-bottom: 10px; }
+  .seg[hidden] { display: none; }
+  .seg-row {
+    display: flex; gap: 2px; padding: 2px; background: #eef0f2;
+    border-radius: 9px; border: 1px solid #e1e4e8;
+  }
+  .seg-btn {
+    flex: 1; padding: 7px 8px; font-size: 12px; font-weight: 500;
+    border: 0; border-radius: 7px; background: transparent; color: #57606a;
+    cursor: pointer; font-family: inherit;
+  }
+  .seg-btn.on { background: #3b82f6; color: #fff; }
+  .seg-btn:disabled { opacity: 0.5; cursor: default; }
+  .seg-hint { font-size: 11px; color: #6a737d; margin-top: 6px; min-height: 14px; }
+  .seg-hint .dot {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #d29922; margin-right: 5px; vertical-align: middle;
+  }
+  .seg-hint.ready .dot { background: #2ea043; }
   .swatch {
     display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px;
   }
@@ -54,6 +73,13 @@
   <div class="stat"><span>Observed</span><b id="sObs">—</b></div>
   <div class="stat"><span>Confidence</span><b id="sConf">—</b></div>
   <div class="controls">
+    <div id="consolidate" class="seg" hidden>
+      <div class="seg-row">
+        <button class="seg-btn" id="btnBefore" type="button">Before</button>
+        <button class="seg-btn on" id="btnAfter" type="button">Photoreal</button>
+      </div>
+      <div class="seg-hint" id="cvStatus">—</div>
+    </div>
     <label class="ctl">
       <input type="checkbox" id="cProv"> Show what's real vs guessed
     </label>

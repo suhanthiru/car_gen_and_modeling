@@ -123,4 +123,6 @@ class VehicleStore:
             "splats": stats.get("splats", 0),
             "observed_fraction": stats.get("observed_fraction", 0.0),
             "mean_confidence": stats.get("mean_confidence", 0.0),
+            "frames": manifest.get("frames", 0),
+            "consolidated_frames": manifest.get("consolidated_frames", 0),
         }

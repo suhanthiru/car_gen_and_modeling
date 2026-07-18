@@ -60,6 +60,11 @@ class VehicleAsset:
     observations: list[dict] = field(default_factory=list)
     embeddings: np.ndarray | None = None  # (n_obs, dim) float32, order matches observations
     frames: list[FrameRecord] = field(default_factory=list)
+    # Frame count at the last joint-consolidation pass. The server uses it to
+    # skip re-consolidating until meaningfully more frames have arrived (0 =
+    # never consolidated). Migration-safe: assets written before this field
+    # load as 0 and simply consolidate on their next qualifying ingest.
+    consolidated_frames: int = 0
 
     def add_frame(
         self,
@@ -134,6 +139,8 @@ class VehicleAsset:
             "created_ts": self.created_ts,
             "updated_ts": self.updated_ts,
             "observations": self.observations,
+            "frames": len(self.frames),
+            "consolidated_frames": self.consolidated_frames,
             "stats": self.cloud.stats(),
         }
         (directory / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2))
@@ -257,6 +264,7 @@ class VehicleAsset:
             observations=manifest.get("observations", []),
             embeddings=embeddings,
             frames=VehicleAsset._load_frames(directory),
+            consolidated_frames=manifest.get("consolidated_frames", 0),
         )
 
     @staticmethod

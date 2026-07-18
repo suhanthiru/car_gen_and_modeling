@@ -81,10 +81,15 @@ async function start(name) {
   scene.add(viewer);
 
   await loadSplats(viewer, name, "splat");
+  loadedFmt = "splat";
   msg.hidden = true;
   hud.hidden = false;
   fillHud(info);
   wireControls(viewer, controls, name);
+  updateConsolidationUI(info.consolidation);
+  prevConsolidation = info.consolidation;
+  // live-update: when the background photoreal pass lands, refresh in place
+  setInterval(() => pollConsolidation(viewer, name), 4000);
 
   addEventListener("resize", () => {
     camera.aspect = innerWidth / innerHeight;
@@ -182,19 +187,91 @@ function fillHud(info) {
   document.getElementById("sConf").textContent = info.mean_confidence.toFixed(2);
 }
 
+// Which export is on screen, and whether the user is viewing the pre- or
+// post-consolidation model. The two toggles below both resolve through
+// applyView so they can't fight over the single loaded scene.
+let loadedFmt = null;
+let timeMode = "after"; // "before" | "after"
+let prevConsolidation = null;
+
+function desiredFmt() {
+  const prov = document.getElementById("cProv");
+  if (timeMode === "before") return "before"; // provenance is disabled in Before
+  return prov.checked ? "provenance" : "splat";
+}
+
+async function applyView(viewer, name, force = false) {
+  const fmt = desiredFmt();
+  if (fmt === loadedFmt && !force) return;
+  await viewer.removeSplatScene(0);
+  await loadSplats(viewer, name, fmt);
+  loadedFmt = fmt;
+}
+
 function wireControls(viewer, controls, name) {
   const prov = document.getElementById("cProv");
   const spin = document.getElementById("cSpin");
+  const before = document.getElementById("btnBefore");
+  const after = document.getElementById("btnAfter");
 
   prov.onchange = async () => {
     document.getElementById("legend").classList.toggle("on", prov.checked);
     prov.disabled = true;
-    // The provenance twin is a separate export, so swap the loaded scene.
-    await viewer.removeSplatScene(0);
-    await loadSplats(viewer, name, prov.checked ? "provenance" : "splat");
+    await applyView(viewer, name);
     prov.disabled = false;
   };
 
+  const setTime = async (mode) => {
+    timeMode = mode;
+    before.classList.toggle("on", mode === "before");
+    after.classList.toggle("on", mode === "after");
+    // provenance is only meaningful on the current (post-consolidation) model
+    if (mode === "before") {
+      prov.checked = false;
+      document.getElementById("legend").classList.remove("on");
+    }
+    prov.disabled = mode === "before";
+    await applyView(viewer, name);
+  };
+  before.onclick = () => setTime("before");
+  after.onclick = () => setTime("after");
+
   spin.onchange = () => (controls.autoRotate = spin.checked);
   controls.addEventListener("start", () => (spin.checked = false));
+}
+
+function updateConsolidationUI(stateStr) {
+  const box = document.getElementById("consolidate");
+  const status = document.getElementById("cvStatus");
+  const before = document.getElementById("btnBefore");
+  if (stateStr === "none") {
+    box.hidden = true; // nothing consolidated yet — no A/B to show
+    return;
+  }
+  box.hidden = false;
+  if (stateStr === "refining") {
+    status.className = "seg-hint";
+    status.innerHTML = '<span class="dot"></span>Refining… photoreal pass running';
+    before.disabled = true; // the "before" snapshot exists once the pass starts
+  } else {
+    status.className = "seg-hint ready";
+    status.innerHTML = '<span class="dot"></span>Photoreal ready';
+    before.disabled = false;
+  }
+}
+
+async function pollConsolidation(viewer, name) {
+  let info;
+  try {
+    info = await (await fetch(`/vehicles/${encodeURIComponent(name)}`)).json();
+  } catch {
+    return;
+  }
+  updateConsolidationUI(info.consolidation);
+  fillHud(info); // keep splat count / observed % live as evidence lands
+  // the pass just finished: model.splat was overwritten, so reload it in place
+  if (info.consolidation === "ready" && prevConsolidation === "refining" && timeMode === "after") {
+    await applyView(viewer, name, true);
+  }
+  prevConsolidation = info.consolidation;
 }

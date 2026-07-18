@@ -54,6 +54,16 @@ class Config:
     auto_merge: bool = os.environ.get("CARGEN_AUTO_MERGE", "0") == "1"
     merge_threshold: float = float(os.environ.get("CARGEN_MERGE_THRESHOLD", "0.92"))
 
+    # Auto-run the heavy joint consolidation (photorealism) pass in the
+    # background after an ingest, once a vehicle has enough frames. Default ON,
+    # but it is a no-op unless gsplat is actually importable (see
+    # backends.gsplat_available) — so it stays dormant on a CPU-only box rather
+    # than crashing. min_frames avoids spending GPU minutes on a 3-frame clip;
+    # the roadmap's >30dB target wants 50+, so 24 is a deliberate "enough to be
+    # worth it, not enough to wait for perfection" floor.
+    auto_consolidate: bool = os.environ.get("CARGEN_AUTO_CONSOLIDATE", "1") == "1"
+    consolidate_min_frames: int = int(os.environ.get("CARGEN_CONSOLIDATE_MIN_FRAMES", "24"))
+
     # See Pipeline.prior_points: 20k reads as gravel on a car-sized object.
     prior_points: int = int(os.environ.get("CARGEN_PRIOR_POINTS", "120000"))
     max_upload_mb: int = int(os.environ.get("CARGEN_MAX_UPLOAD_MB", "256"))

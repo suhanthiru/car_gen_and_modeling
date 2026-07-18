@@ -67,6 +67,7 @@ function upload(file, kind) {
         (res.result.frames_fused > 1 ? ` (${res.result.frames_fused} frames fused)` : ""),
       "ok"
     );
+    showView(res.vehicle.folder); // drop the fresh model into the embedded viewer
     refresh();
   };
   xhr.onerror = () => setStatus("Network error — is the server still running?", "err");
@@ -75,6 +76,17 @@ function upload(file, kind) {
 
 async function refresh() {
   await Promise.all([refreshVehicles(), refreshPending()]);
+}
+
+// Show a vehicle in the embedded viewer (same page, no navigation). The iframe
+// IS the full viewer, so the Before/Photoreal toggle and live refresh come free.
+function showView(folder) {
+  const section = $("viewSection");
+  const view = $("view");
+  const src = `/viewer/?v=${encodeURIComponent(folder)}`;
+  if (view.getAttribute("src") !== src) view.src = src;
+  section.hidden = false;
+  section.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function refreshVehicles() {
@@ -93,7 +105,7 @@ async function refreshVehicles() {
             <div class="name">${escapeHtml(v.name)}</div>
             <div class="meta">${v.splats} splats · ${pct}% observed · ${v.observations} obs</div>
           </div>
-          <a class="btn mini" href="/viewer/?v=${encodeURIComponent(v.folder)}">View 3D</a>
+          <button class="btn mini" data-view="${escapeHtml(v.folder)}">View 3D</button>
         </li>`;
       })
       .join("");
@@ -101,6 +113,11 @@ async function refreshVehicles() {
     list.innerHTML = '<li class="empty">Server unreachable.</li>';
   }
 }
+
+$("vehicles").addEventListener("click", (e) => {
+  const folder = e.target.dataset.view;
+  if (folder) showView(folder);
+});
 
 async function refreshPending() {
   const box = $("pending");

@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from cargen import backends as cargen_backends
@@ -55,6 +55,19 @@ def decode_image(payload: bytes, max_width: int) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def should_autoconsolidate(asset: VehicleAsset, config: Config, gsplat_ok: bool) -> bool:
+    """Whether an ingest should trigger the background photorealism pass.
+
+    Pure decision (no side effects) so the gating is unit-testable without a GPU:
+    consolidation itself needs CUDA+gsplat, but *deciding* to run it shouldn't.
+    """
+    if not config.auto_consolidate or not gsplat_ok:
+        return False
+    n_frames = len(asset.frames)
+    # enough evidence to be worth GPU minutes, and something new since last pass
+    return n_frames >= config.consolidate_min_frames and n_frames > asset.consolidated_frames
+
+
 def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -> FastAPI:
     config = config or CONFIG
     store = VehicleStore(config)
@@ -65,7 +78,15 @@ def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -
 
     # Built lazily: constructing the pipeline may load ML backends, which must
     # not happen at import time (tests, --help, etc.).
-    state: dict = {"pipeline": pipeline}
+    # `consolidating` holds vehicles whose background photorealism pass is
+    # in flight, so /vehicles can report "refining" for the live UI toggle.
+    state: dict = {"pipeline": pipeline, "consolidating": set()}
+
+    def consolidation_state(summ: dict) -> str:
+        """UI state for the Before/Photoreal toggle: refining | ready | none."""
+        if summ["folder"] in state["consolidating"]:
+            return "refining"
+        return "ready" if summ.get("consolidated_frames", 0) > 0 else "none"
 
     def get_pipeline() -> Pipeline:
         if state["pipeline"] is None:
@@ -142,6 +163,10 @@ def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -
                 data=summary,
             )
         )
+        # enough real evidence may now justify the joint photorealism pass; this
+        # runs in the background and does not delay the capture response
+        _maybe_autoconsolidate(folder)
+
         merge_events = merges.scan(folder)
         return {
             "vehicle": store.summary(folder),
@@ -154,28 +179,93 @@ def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -
 
         return pipe.ingest_video(asset, iter_video_frames(str(path)), device=device)
 
+    def _maybe_autoconsolidate(folder: str) -> None:
+        """Kick off the heavy photorealism pass in the background if warranted.
+
+        Deliberately NOT part of the ingest's synchronous `work()`: consolidation
+        is ~15k GPU iterations (minutes), and the capture page must get its
+        response back immediately. Submitting on the same per-vehicle lock means
+        this queues *behind* the just-finished fusion and never races another job
+        for the same car, while other cars proceed. No-op unless gsplat is really
+        importable, so a CPU-only box just skips it instead of erroring.
+        """
+        asset = store.load(folder)
+        if not should_autoconsolidate(asset, config, cargen_backends.gsplat_available()):
+            return  # disabled, no GPU, too few frames, or nothing new since last pass
+
+        def consolidate_work() -> None:
+            try:
+                a = store.load(folder)
+                n = len(a.frames)
+                if n <= a.consolidated_frames:  # a concurrent pass already caught up
+                    return
+                # snapshot the pre-consolidation model so the viewer can show a
+                # Before/Photoreal A/B without re-fusing anything
+                from cargen.export.exporter import export_all
+
+                export_all(
+                    a.cloud, config.vehicle_dir(folder) / "exports", stem="model-before"
+                )
+                events.append(Event(
+                    kind="consolidate", vehicle=folder,
+                    message=f"consolidating '{folder}' ({n} frames) — photoreal refinement",
+                ))
+                report = get_pipeline().consolidate(a)
+                a.consolidated_frames = n
+                store.save(folder, a)
+                psnr = (
+                    sum(report.psnr_by_frame.values()) / len(report.psnr_by_frame)
+                    if report.psnr_by_frame else 0.0
+                )
+                events.append(Event(
+                    kind="consolidate", vehicle=folder,
+                    message=(
+                        f"consolidated '{folder}': final loss {report.final_loss:.4f}, "
+                        f"mean PSNR {psnr:.1f} dB, {report.promoted_to_observed} splats confirmed"
+                    ),
+                    data={
+                        "final_loss": report.final_loss,
+                        "iterations": report.iterations_run,
+                        "promoted_to_observed": report.promoted_to_observed,
+                        "frames": n,
+                    },
+                ))
+            finally:
+                state["consolidating"].discard(folder)
+
+        state["consolidating"].add(folder)
+        queue.submit(folder, consolidate_work, kind="consolidate")
+
     # -- read ----------------------------------------------------------------
 
     @app.get("/vehicles")
     def list_vehicles():
-        return {"vehicles": [store.summary(f) for f in store.folders()]}
+        out = []
+        for f in store.folders():
+            summ = store.summary(f)
+            summ["consolidation"] = consolidation_state(summ)
+            out.append(summ)
+        return {"vehicles": out}
 
     @app.get("/vehicles/{key}")
     def get_vehicle(key: str):
         folder = resolve_or_404(key)
         manifest = store.manifest(folder) or {}
-        return {
-            **store.summary(folder),
-            "observations_log": manifest.get("observations", []),
-        }
+        summ = store.summary(folder)
+        summ["consolidation"] = consolidation_state(summ)
+        return {**summ, "observations_log": manifest.get("observations", [])}
 
     @app.get("/vehicles/{key}/model")
-    def get_model(key: str, fmt: str = Query("splat", pattern="^(splat|ply|provenance)$")):
+    def get_model(
+        key: str,
+        fmt: str = Query("splat", pattern="^(splat|ply|provenance|before)$"),
+    ):
         folder = resolve_or_404(key)
         filename = {
             "splat": "model.splat",
             "ply": "model.ply",
             "provenance": "model_provenance.ply",
+            "before": "model-before.splat",  # pre-consolidation snapshot
         }[fmt]
         path = store.export_path(folder, filename)
         if not path.exists():
@@ -281,9 +371,12 @@ def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -
     if capture_dir.exists():
         app.mount("/capture", StaticFiles(directory=capture_dir, html=True), name="capture")
 
-        @app.get("/", response_class=HTMLResponse)
+        # Redirect to the mounted path rather than serving index.html at "/"
+        # directly: the page loads app.js/manifest.json by relative URL, which
+        # only resolve under the /capture/ mount (at "/" they 404).
+        @app.get("/")
         def index():
-            return (capture_dir / "index.html").read_text(encoding="utf-8")
+            return RedirectResponse(url="/capture/")
 
     app.state.store = store
     app.state.events = events
