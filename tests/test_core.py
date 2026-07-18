@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cargen.core.asset import VehicleAsset
+from cargen.core.asset import FrameRecord, VehicleAsset
 from cargen.core.camera import CameraPose, Intrinsics, Sim3, umeyama
 from cargen.core.splat import SH_REST_COEFFS, GaussianCloud, Provenance
 
@@ -191,3 +191,57 @@ class TestVehicleAsset:
         np.savez_compressed(path, **broken)
         with pytest.raises(KeyError, match="opacities"):
             VehicleAsset.load(tmp_path / "v")
+
+    def test_add_frame_returns_sequential_index(self, small_cloud):
+        asset = VehicleAsset(name="x", cloud=small_cloud)
+        image = np.zeros((4, 6, 3), np.uint8)
+        pose = CameraPose.identity()
+        intr = Intrinsics.simple(6, 4)
+        assert asset.add_frame(image, None, pose, intr) == 0
+        assert asset.add_frame(image, None, pose, intr) == 1
+        assert len(asset.load_frames()) == 2
+
+    def test_save_load_frames_roundtrip(self, tmp_path, small_cloud):
+        asset = VehicleAsset(name="x", cloud=small_cloud)
+        rng = np.random.default_rng(7)
+        image = rng.integers(0, 255, size=(8, 10, 3), dtype=np.uint8)
+        mask = rng.random((8, 10)).astype(np.float32)
+        pose = CameraPose.look_at(eye=(3, 0, 0), target=(0, 0, 0))
+        intr = Intrinsics.simple(10, 8)
+        asset.add_frame(image, mask, pose, intr, evidence_weight=0.85)
+        # a second frame with no mask, to confirm has_mask=False round-trips too
+        asset.add_frame(image, None, pose, intr)
+        asset.save(tmp_path / "v")
+
+        loaded = VehicleAsset.load(tmp_path / "v")
+        frames = loaded.load_frames()
+        assert len(frames) == 2
+
+        f0 = frames[0]
+        assert isinstance(f0, FrameRecord)
+        assert f0.index == 0
+        assert np.array_equal(f0.image_rgb, image)
+        assert f0.mask is not None
+        assert np.allclose(f0.mask, mask, atol=1.0 / 255.0)
+        assert np.allclose(f0.pose.R, pose.R, atol=1e-9)
+        assert np.allclose(f0.pose.t, pose.t, atol=1e-9)
+        assert f0.intrinsics.width == intr.width
+        assert f0.intrinsics.fx == pytest.approx(intr.fx)
+        assert f0.evidence_weight == pytest.approx(0.85)
+
+        f1 = frames[1]
+        assert f1.mask is None
+        assert f1.evidence_weight == pytest.approx(1.0)
+
+    def test_loads_assets_written_before_frames_existed(self, tmp_path, small_cloud):
+        """Assets saved before frame/pose persistence existed have no `frames/`
+        directory or `poses.json` at all. They must keep loading, with an
+        empty frame list rather than an error — the same migration reasoning
+        as `load_cloud_fields`'s missing `sh_rest`."""
+        VehicleAsset(name="old", cloud=small_cloud).save(tmp_path / "v")
+        import shutil
+        shutil.rmtree(tmp_path / "v" / "frames")
+        (tmp_path / "v" / "poses.json").unlink()
+
+        loaded = VehicleAsset.load(tmp_path / "v")
+        assert loaded.load_frames() == []

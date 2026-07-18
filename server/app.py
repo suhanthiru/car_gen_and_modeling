@@ -25,6 +25,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from cargen import backends as cargen_backends
 from cargen.core.asset import VehicleAsset
 from cargen.pipeline import Pipeline
 from server.config import CONFIG, PROJECT_ROOT, Config
@@ -259,6 +260,9 @@ def create_app(config: Config | None = None, pipeline: Pipeline | None = None) -
             "vehicles": len(store.folders()),
             "storage": str(config.storage_root),
             "auto_merge": config.auto_merge,
+            # static probe, independent of pipe/backends being built yet —
+            # answers "can this process even import gsplat" at a glance
+            "gsplat_available": cargen_backends.gsplat_available(),
             "backends": backends,
             "queue": {
                 "submitted": queue.stats.submitted,

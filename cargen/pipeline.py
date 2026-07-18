@@ -234,6 +234,10 @@ class Pipeline:
         if report.accepted:
             asset.cloud = cloud
             self._record_landmarks(asset, image_rgb, mask, registration.pose, intrinsics)
+            asset.add_frame(
+                image_rgb, mask, registration.pose, intrinsics,
+                evidence_weight=evidence_weight_for(device),
+            )
         asset.add_observation(
             {
                 "kind": "photo", "device": device, "ts": timestamp,

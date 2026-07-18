@@ -89,6 +89,14 @@ shell (the cached installer path is from winget):
 Version must match the PyTorch build (cu121 → 12.1); PyTorch rejects a CUDA *major* mismatch
 when building extensions.
 
+### Verifying gsplat is really working
+`import gsplat` JIT-compiles CUDA kernels on first use, and a stale or mismatched build can
+"succeed" at both importing and rendering while quietly never moving the optimizer — a no-op
+that looks fine until you notice the model never improves. Run `python scripts/verify_gsplat.py`
+after any `pip install gsplat` to check for real: it renders a tiny synthetic cloud, runs 20
+`LocalizedOptimizer` iterations against a target photo, and fails loudly if the loss didn't
+actually decrease, rather than just checking that nothing crashed.
+
 ### Demo `observed%` ceiling
 The procedural demo sedan is built from overlapping boxes, so ~34% of its sampled surface is
 interior faces no camera can reach. `demo/synthetic.py` visibility-culls them so the number

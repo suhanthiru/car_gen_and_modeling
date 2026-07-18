@@ -22,60 +22,18 @@ import numpy as np
 
 from cargen.core.camera import CameraPose, Intrinsics
 from cargen.core.splat import GaussianCloud
+from cargen.fusion_engine.gsplat_common import (
+    SH_C0 as _SH_C0,
+    logit as _logit,
+    rgb_to_sh_dc_torch as _rgb_to_sh_dc_torch,
+    sh_colors_from_dc_rest,
+    weighted_l1_dssim as _weighted_l1_dssim,
+)
 
-
-#: Y_0^0 — the SH DC basis function, matching the exporter and gsplat renderer.
-_SH_C0 = 0.28209479177387814
-
-
-def _logit(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    x = np.clip(x, eps, 1 - eps)
-    return np.log(x / (1 - x))
-
-
-def _rgb_to_sh_dc_torch(rgb):
-    """Linear RGB → SH DC coefficient (differentiable; keeps the graph)."""
-    return (rgb - 0.5) / _SH_C0
-
-
-def _gaussian_window(size: int, sigma: float, device, torch):
-    coords = torch.arange(size, dtype=torch.float32, device=device) - size // 2
-    g = torch.exp(-(coords**2) / (2 * sigma**2))
-    g = g / g.sum()
-    return (g[:, None] @ g[None, :])[None, None]
-
-
-def _weighted_l1_dssim(rendered, target, weight, ssim_lambda: float):
-    """(1-λ)·L1 + λ·D-SSIM, both masked to the dirty region.
-
-    The 3DGS paper's loss. L1 alone converges to a blurry mean; SSIM alone is
-    indifferent to absolute colour. `weight` is what makes this *localized*:
-    pixels outside the dirty region contribute zero, so nothing the frame does
-    not dispute can pull on the optimizer.
-    """
-    import torch
-    import torch.nn.functional as F
-
-    denom = weight.sum().clamp_min(1e-8)
-    l1 = ((rendered - target).abs() * weight).sum() / (denom * 3)
-
-    # SSIM over an 11x11 Gaussian window, the standard setup
-    x = rendered.permute(0, 3, 1, 2)
-    y = target.permute(0, 3, 1, 2)
-    win = _gaussian_window(11, 1.5, rendered.device, torch).expand(3, 1, 11, 11)
-    mu_x = F.conv2d(x, win, padding=5, groups=3)
-    mu_y = F.conv2d(y, win, padding=5, groups=3)
-    mu_x2, mu_y2, mu_xy = mu_x * mu_x, mu_y * mu_y, mu_x * mu_y
-    sigma_x = F.conv2d(x * x, win, padding=5, groups=3) - mu_x2
-    sigma_y = F.conv2d(y * y, win, padding=5, groups=3) - mu_y2
-    sigma_xy = F.conv2d(x * y, win, padding=5, groups=3) - mu_xy
-    c1, c2 = 0.01**2, 0.03**2
-    ssim_map = ((2 * mu_xy + c1) * (2 * sigma_xy + c2)) / (
-        (mu_x2 + mu_y2 + c1) * (sigma_x + sigma_y + c2)
-    )
-    w = weight.permute(0, 3, 1, 2)
-    ssim = (ssim_map * w).sum() / (w.sum().clamp_min(1e-8) * 3)
-    return (1 - ssim_lambda) * l1 + ssim_lambda * (1 - ssim)
+# `_SH_C0`/`_logit`/`_rgb_to_sh_dc_torch`/`_weighted_l1_dssim` now live in
+# gsplat_common.py, shared with consolidate.py's Consolidator. Re-imported
+# under their old private names here so nothing below (or any external caller
+# reaching into this module) needs to change.
 
 
 @dataclass
@@ -184,7 +142,7 @@ class LocalizedOptimizer:
             dc = t.cat([frozen["colors"], params["colors"].clamp(0, 1)])
             rest = t.cat([frozen["sh_rest"], params["sh_rest"]])
             # SH coefficients: DC as band 0, then bands 1-3 -> (N, 16, 3)
-            colors = t.cat([_rgb_to_sh_dc_torch(dc)[:, None, :], rest], dim=1)
+            colors = sh_colors_from_dc_rest(dc, rest)
 
             rendered, _, _ = rasterization(
                 means=means, quats=quats, scales=scales, opacities=opacities,

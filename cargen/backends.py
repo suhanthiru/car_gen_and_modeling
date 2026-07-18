@@ -99,6 +99,16 @@ def build_renderer(name: str | None = None) -> SplatRenderer:
     raise ValueError(f"unknown renderer: {name!r} (point|gsplat)")
 
 
+def gsplat_available() -> bool:
+    """Whether gsplat can actually be imported here — independent of which renderer this process is configured with."""
+    try:
+        import gsplat  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def build_embedder(name: str | None = None) -> Embedder:
     name = (name or os.environ.get("CARGEN_EMBEDDER", "histogram")).lower()
     if name == "histogram":

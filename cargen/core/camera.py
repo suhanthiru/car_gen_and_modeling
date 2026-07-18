@@ -39,6 +39,19 @@ class Intrinsics:
             width=int(round(self.width * factor)), height=int(round(self.height * factor)),
         )
 
+    def to_dict(self) -> dict:
+        return {
+            "fx": self.fx, "fy": self.fy, "cx": self.cx, "cy": self.cy,
+            "width": self.width, "height": self.height,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "Intrinsics":
+        return Intrinsics(
+            fx=d["fx"], fy=d["fy"], cx=d["cx"], cy=d["cy"],
+            width=d["width"], height=d["height"],
+        )
+
 
 @dataclass(frozen=True)
 class CameraPose:
@@ -83,6 +96,13 @@ class CameraPose:
         u = intr.fx * cam[:, 0] / safe_z + intr.cx
         v = intr.fy * cam[:, 1] / safe_z + intr.cy
         return np.stack([u, v], axis=1), z
+
+    def to_dict(self) -> dict:
+        return {"R": self.R.tolist(), "t": self.t.tolist()}
+
+    @staticmethod
+    def from_dict(d: dict) -> "CameraPose":
+        return CameraPose(R=np.array(d["R"], np.float64), t=np.array(d["t"], np.float64))
 
 
 @dataclass(frozen=True)
