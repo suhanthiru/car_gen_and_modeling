@@ -65,6 +65,66 @@ def canonicalize_orientation(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return out.astype(np.float32), rotation.astype(np.float32)
 
 
+def level_ground_contact(
+    vertices: np.ndarray,
+    n_bins: int = 20,
+    floor_percentile: float = 2.0,
+    min_bin_points: int = 20,
+    noise_floor_slope: float = 0.01,
+) -> np.ndarray:
+    """De-tilt a car's underside so it rests on one flat ground plane.
+
+    Single-view generative priors can warp the belly along the length axis:
+    the confirmed end sits flush, the far (guessed) end floats. Measured on a
+    real capture (a Mach-E, one photo): the ground-contact floor rose from
+    z~0.00 at the rear to z~0.20 at the front over the car's ~2-unit length
+    (~10% grade) — real cars sit level on four wheels; nothing legitimate
+    produces that.
+
+    This corrects the FULL measured slope, not just an "excess" over some
+    plausible-rake allowance — this function only ever runs on a *generated*
+    prior (see `normalize_to_canonical`'s `use_pca` path), never on real
+    photographed geometry, so there is no legitimate intentional-rake case to
+    protect here: any systematic length-wise tilt in a single-view guess is an
+    artifact, full stop. `noise_floor_slope` is purely a numerical guard
+    against overcorrecting a genuinely flat cloud's estimation jitter, not a
+    "preserve some rake" allowance.
+
+    Runs on PCA-oriented (not yet grounded/scaled) vertices: x=length,
+    y=width, z=height (see `canonicalize_orientation`). The caller's existing
+    final `v[:, 2] -= v[:, 2].min()` still does the actual grounding — this
+    only removes the length-wise trend beforehand so that grounding places
+    the WHOLE underside at z=0, not just whichever end happens to be lowest.
+    """
+    v = np.asarray(vertices, np.float64).copy()
+    x, z = v[:, 0], v[:, 2]
+    if x.max() <= x.min():
+        return v.astype(np.float32)
+
+    edges = np.linspace(x.min(), x.max(), n_bins + 1)
+    bin_idx = np.clip(np.digitize(x, edges) - 1, 0, n_bins - 1)
+
+    centers, floors = [], []
+    for i in range(n_bins):
+        in_bin = bin_idx == i
+        if in_bin.sum() < min_bin_points:
+            continue
+        centers.append((edges[i] + edges[i + 1]) / 2)
+        floors.append(np.percentile(z[in_bin], floor_percentile))
+    if len(centers) < 3:
+        return v.astype(np.float32)  # not enough spread to fit a trend
+
+    centers_arr, floors_arr = np.array(centers), np.array(floors)
+    slope, _ = np.polyfit(centers_arr, floors_arr, 1)  # floor ~= intercept + slope*x
+
+    if abs(slope) <= noise_floor_slope:
+        return v.astype(np.float32)  # already flat; don't chase estimation noise
+
+    x_ref = float(centers_arr.mean())
+    v[:, 2] -= slope * (x - x_ref)
+    return v.astype(np.float32)
+
+
 def normalize_to_canonical(
     vertices: np.ndarray, from_y_up: bool = True, use_pca: bool = False
 ) -> tuple[np.ndarray, float]:
@@ -88,6 +148,7 @@ def normalize_to_canonical(
 
     if use_pca:
         v, _ = canonicalize_orientation(v)
+        v = level_ground_contact(v)
     elif from_y_up:
         v = v @ _YUP_TO_ZUP.T
     v = v - v.mean(axis=0)

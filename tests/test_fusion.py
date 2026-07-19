@@ -299,7 +299,14 @@ class TestDensification:
 
 
 class TestPruning:
-    def test_transparent_splats_pruned(self, engine, truth_cloud, intrinsics, renderer):
+    def test_transparent_splats_pruned(self, truth_cloud, intrinsics, renderer):
+        # symmetry/smoothing off: this test is about the prune step
+        # specifically, and smoothing could nudge a zero-opacity outlier's
+        # opacity toward its local median before pruning ever sees it — see
+        # tests/test_symmetry.py for that behavior's own tests.
+        engine = FusionEngine(
+            renderer, FusionConfig(mirror_symmetry=False, smooth_bands=False)
+        )
         cloud = truth_cloud.with_updates(
             np.arange(10), opacities=np.zeros(10, np.float32)
         )
@@ -343,9 +350,19 @@ class TestLocalizedOptimizer:
         self, renderer, prior_cloud, truth_cloud, intrinsics
     ):
         """The property the whole localized design rests on: a frame may only
-        alter splats it disputes. Everything else must come out identical."""
+        alter splats it disputes. Everything else must come out identical.
+
+        Symmetry/smoothing off: those passes deliberately touch PRIOR splats
+        outside the dispute region too (that's their whole point — propagate
+        confirmed evidence to the still-guessed side) — a separate, later
+        mechanism with its own tests in tests/test_symmetry.py, orthogonal to
+        the dirty-region contract this test pins down."""
         fake = self._FakeOptimizer()
-        engine = FusionEngine(renderer, FusionConfig(), optimizer=fake)
+        engine = FusionEngine(
+            renderer,
+            FusionConfig(mirror_symmetry=False, smooth_bands=False),
+            optimizer=fake,
+        )
         photo, mask = _photo(truth_cloud, 0.0, intrinsics, renderer)
         before = prior_cloud
 

@@ -32,6 +32,11 @@ from cargen.core.camera import CameraPose, Intrinsics
 from cargen.core.splat import GaussianCloud, Provenance
 from cargen.fusion_engine.renderer import SplatRenderer
 from cargen.fusion_engine.residual import compensate_exposure, dilate_mask, residual_map
+from cargen.fusion_engine.symmetry import (
+    DEFAULT_MIRROR_RADIUS,
+    mirror_confirmed,
+    smooth_material_bands,
+)
 
 
 @dataclass
@@ -57,6 +62,13 @@ class FusionConfig:
     # those would let the fit map reality onto the model's error. See
     # residual.compensate_exposure.
     exposure_trust_confidence: float = 0.75
+    # Symbolic geometric priors (see fusion_engine/symmetry.py) — cheap,
+    # bounded constraints ("cars are bilaterally symmetric," "glass/panel are
+    # locally coherent materials") applied to freshly-confirmed evidence each
+    # frame. Both only ever touch PRIOR splats; real evidence always wins.
+    mirror_symmetry: bool = True
+    mirror_radius: float = DEFAULT_MIRROR_RADIUS
+    smooth_bands: bool = True
 
 
 @dataclass
@@ -174,6 +186,18 @@ class FusionEngine:
         )
         report.dirty = int(dirty_idx.size)
         report.promoted = recolor_promoted + confirm_promoted
+
+        # Symbolic priors: exploit the evidence this frame just confirmed to
+        # improve still-guessed splats elsewhere in the cloud. Cheap, bounded,
+        # never touches provenance/confidence or an already-OBSERVED splat.
+        if cfg.mirror_symmetry:
+            cloud, mirrored = mirror_confirmed(cloud, radius=cfg.mirror_radius)
+            if mirrored:
+                report.extras["mirrored"] = mirrored
+        if cfg.smooth_bands:
+            cloud, smoothed = smooth_material_bands(cloud)
+            if smoothed:
+                report.extras["smoothed"] = smoothed
 
         cloud, densified = self._densify(
             cloud, render, surprise, observed, vehicle, pose, intrinsics,

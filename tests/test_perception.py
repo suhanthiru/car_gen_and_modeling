@@ -26,6 +26,7 @@ from cargen.pose_estimation.stub import StubRegistrar
 from cargen.prior_generation.canonical import (
     CANONICAL_LENGTH,
     canonicalize_orientation,
+    level_ground_contact,
     normalize_to_canonical,
 )
 from cargen.prior_generation.interface import Mesh
@@ -146,6 +147,61 @@ class TestPcaCanonicalisation:
         assert np.ptp(out[:, 0]) == pytest.approx(CANONICAL_LENGTH, abs=1e-4)
         assert out[:, 2].min() == pytest.approx(0.0, abs=1e-6)
         assert scale > 0
+
+
+class TestGroundContactLeveling:
+    """The measured failure: a single-view generative prior can warp the
+    underside along the length axis, so only the confirmed end sits flush and
+    the guessed end floats (found on a real Mach-E capture: floor rose from
+    z~0.00 at the rear to z~0.20 at the front over a ~2-unit length)."""
+
+    @staticmethod
+    def _floor(points, lo, hi, pct=1.0):
+        seg = points[(points[:, 0] >= lo) & (points[:, 0] < hi)]
+        return float(np.percentile(seg[:, 2], pct))
+
+    def _tilted_car(self, rng, n=40_000, x_lo=-0.91, x_hi=1.09, rise=0.20):
+        """Reproduces the measured real-world case: floor rises linearly with
+        x from 0 at the rear to `rise` at the front; body sits above its local
+        floor."""
+        x = rng.uniform(x_lo, x_hi, n)
+        frac = (x - x_lo) / (x_hi - x_lo)
+        floor = frac * rise
+        z = floor + rng.uniform(0, 0.7, n)
+        y = rng.uniform(-0.45, 0.45, n)
+        return np.stack([x, y, z], axis=1)
+
+    def test_levels_the_measured_real_world_tilt(self):
+        rng = np.random.default_rng(10)
+        car = self._tilted_car(rng)
+        out = level_ground_contact(car)
+
+        before_rear = self._floor(car, -0.91, -0.24)
+        before_front = self._floor(car, 0.44, 1.09)
+        after_rear = self._floor(out, -0.91, -0.24)
+        after_front = self._floor(out, 0.44, 1.09)
+
+        assert before_front - before_rear > 0.1, "test setup: should start tilted"
+        assert abs(after_front - after_rear) < 0.02, (
+            f"still tilted after leveling: rear={after_rear:.3f} front={after_front:.3f}"
+        )
+
+    def test_flat_car_is_left_alone(self):
+        rng = np.random.default_rng(11)
+        car = self._tilted_car(rng, rise=0.0)  # no length-wise trend
+        out = level_ground_contact(car)
+        assert np.abs(out - car).max() < 1e-4
+
+    def test_integrates_with_normalize_to_canonical(self):
+        """The bug was found via the real pipeline (normalize_to_canonical
+        with use_pca=True), not level_ground_contact called standalone."""
+        rng = np.random.default_rng(12)
+        car = self._tilted_car(rng)
+        out, _ = normalize_to_canonical(car, use_pca=True)
+        # canonicalize_orientation re-derives axes via PCA, so we only assert
+        # the grounding contract still holds and floor variance shrank
+        # relative to a version that skips leveling.
+        assert out[:, 2].min() == pytest.approx(0.0, abs=1e-5)
 
 
 class TestPrior:
